@@ -163,6 +163,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 	private shuttingDown = false;
 
+	private readonly _onWindowOpened = this._register(new Emitter<ICodeWindow>());
+	readonly onWindowOpened = this._onWindowOpened.event;
+
 	private readonly _onWindowReady = this._register(new Emitter<ICodeWindow>());
 	readonly onWindowReady = this._onWindowReady.event;
 
@@ -383,6 +386,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		openConfig = this.validateOpenConfig(openConfig);
 
 		const pathsToOpen = this.getPathsToOpen(openConfig);
+		this.logService.trace('windowsManager#open pathsToOpen', pathsToOpen);
 
 		const foldersToAdd: IFolderPathToOpen[] = [];
 		const foldersToOpen: IFolderPathToOpen[] = [];
@@ -443,6 +447,8 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 		// Open based on config
 		const usedWindows = this.doOpen(openConfig, workspacesToOpen, foldersToOpen, emptyToRestore, emptyToOpen, fileInputs, foldersToAdd);
+
+		this.logService.trace(`windowsManager#open used window count ${usedWindows.length} (workspacesToOpen: ${workspacesToOpen.length}, foldersToOpen: ${foldersToOpen.length}, emptyToRestore: ${emptyToRestore.length}, emptyToOpen: ${emptyToOpen})`);
 
 		// Make sure to pass focus to the most relevant of the windows if we open multiple
 		if (usedWindows.length > 1) {
@@ -736,6 +742,8 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	}
 
 	private doOpenFilesInExistingWindow(configuration: IOpenConfiguration, window: ICodeWindow, fileInputs?: IFileInputs): ICodeWindow {
+		this.logService.trace('windowsManager#doOpenFilesInExistingWindow');
+
 		window.focus(); // make sure window has focus
 
 		const params: { filesToOpenOrCreate?: IPath[], filesToDiff?: IPath[], filesToWait?: IPathsToWaitFor, termProgram?: string } = {};
@@ -1415,6 +1423,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 			// Add to our list of windows
 			WindowsMainService.WINDOWS.push(createdWindow);
+
+			// Indicate new window via event
+			this._onWindowOpened.fire(createdWindow);
 
 			// Indicate number change via event
 			this._onWindowsCountChanged.fire({ oldCount: WindowsMainService.WINDOWS.length - 1, newCount: WindowsMainService.WINDOWS.length });
