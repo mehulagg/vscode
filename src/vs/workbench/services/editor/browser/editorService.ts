@@ -489,7 +489,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 
 	//#endregion
 
-	//#region preventOpenEditor()
+	//#region editor overrides
 
 	private readonly openEditorHandlers: IOpenEditorOverrideHandler[] = [];
 
@@ -818,7 +818,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 			const rightInput = this.createEditorInput({ resource: resourceDiffInput.rightResource, forceFile: resourceDiffInput.forceFile });
 
 			return new DiffEditorInput(
-				resourceDiffInput.label || this.toSideBySideLabel(leftInput, rightInput, '↔'),
+				resourceDiffInput.label || this.toSideBySideLabel(leftInput, rightInput),
 				resourceDiffInput.description,
 				leftInput,
 				rightInput
@@ -942,7 +942,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		// differs from the canonical resource, we print a warning as this means
 		// the model will not be able to be opened as editor.
 		if (!isEqual(resource, canonicalResource) && this.modelService?.getModel(resource)) {
-			console.warn(`EditorService: a model exists for a resource that is not canonical: ${resource.toString(true)}`);
+			this.logService.warn(`EditorService: a model exists for a resource that is not canonical: ${resource.toString(true)}`);
 		}
 
 		return canonicalResource;
@@ -968,18 +968,13 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		return input;
 	}
 
-	private toSideBySideLabel(leftInput: EditorInput, rightInput: EditorInput, divider: string): string | undefined {
-
-		// Without any resource, do not try to compute a label
-		if (!leftInput.resource || !rightInput.resource) {
-			return undefined;
-		}
+	private toSideBySideLabel(leftInput: EditorInput, rightInput: EditorInput): string | undefined {
 
 		// If both editors are file inputs, we produce an optimized label
 		// by adding the relative path of both inputs to the label. This
 		// makes it easier to understand a file-based comparison.
 		if (this.fileEditorInputFactory.isFileEditorInput(leftInput) && this.fileEditorInputFactory.isFileEditorInput(rightInput)) {
-			return `${this.labelService.getUriLabel(leftInput.preferredResource, { relative: true })} ${divider} ${this.labelService.getUriLabel(rightInput.preferredResource, { relative: true })}`;
+			return `${this.labelService.getUriLabel(leftInput.preferredResource, { relative: true })} ↔ ${this.labelService.getUriLabel(rightInput.preferredResource, { relative: true })}`;
 		}
 
 		// Signal back that the label should be computed from within the editor
