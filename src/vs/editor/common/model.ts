@@ -696,6 +696,11 @@ export interface ITextModel {
 	getEOL(): string;
 
 	/**
+	 * Get the end of line sequence predominantly used in the text buffer.
+	 */
+	getEndOfLineSequence(): EndOfLineSequence;
+
+	/**
 	 * Get the minimum legal column for line at `lineNumber`
 	 */
 	getLineMinColumn(lineNumber: number): number;
@@ -1322,7 +1327,7 @@ export interface IReadonlyTextBuffer {
 /**
  * @internal
  */
-export interface ITextBuffer extends IReadonlyTextBuffer {
+export interface ITextBuffer extends IReadonlyTextBuffer, IDisposable {
 	setEOL(newEOL: '\r\n' | '\n'): void;
 	applyEdits(rawOperations: ValidAnnotatedEditOperation[], recordTrimAutoWhitespace: boolean, computeUndoEdits: boolean): ApplyEditsResult;
 }

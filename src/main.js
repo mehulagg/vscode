@@ -15,6 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const bootstrap = require('./bootstrap');
+const bootstrapNode = require('./bootstrap-node');
 const paths = require('./paths');
 /** @type {any} */
 const product = require('../product.json');
@@ -25,10 +26,10 @@ const { app, protocol, crashReporter } = require('electron');
 app.allowRendererProcessReuse = false;
 
 // Enable portable support
-const portable = bootstrap.configurePortable(product);
+const portable = bootstrapNode.configurePortable(product);
 
 // Enable ASAR support
-bootstrap.enableASARSupport();
+bootstrap.enableASARSupport(undefined);
 
 // Set userData path before app 'ready' event
 const args = parseCLIArgs();
@@ -107,7 +108,7 @@ crashReporter.start({
 // to ensure that no 'logs' folder is created on disk at a
 // location outside of the portable directory
 // (https://github.com/microsoft/vscode/issues/56651)
-if (portable?.isPortable) {
+if (portable && portable.isPortable) {
 	app.setAppLogsPath(path.join(userDataPath, 'logs'));
 }
 
@@ -133,6 +134,15 @@ protocol.registerSchemesAsPrivileged([
 			corsEnabled: true,
 		}
 	},
+	{
+		scheme: 'vscode-file',
+		privileges: {
+			secure: true,
+			standard: true,
+			supportFetchAPI: true,
+			corsEnabled: true
+		}
+	}
 ]);
 
 // Global app listeners

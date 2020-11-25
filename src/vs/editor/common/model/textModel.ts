@@ -328,7 +328,7 @@ export class TextModel extends Disposable implements model.ITextModel {
 		this._undoRedoService = undoRedoService;
 		this._attachedEditorCount = 0;
 
-		this._buffer = createTextBuffer(source, creationOptions.defaultEOL);
+		this._buffer = this._register(createTextBuffer(source, creationOptions.defaultEOL));
 
 		this._options = TextModel.resolveOptions(this._buffer, creationOptions);
 
@@ -828,6 +828,15 @@ export class TextModel extends Disposable implements model.ITextModel {
 	public getEOL(): string {
 		this._assertNotDisposed();
 		return this._buffer.getEOL();
+	}
+
+	public getEndOfLineSequence(): model.EndOfLineSequence {
+		this._assertNotDisposed();
+		return (
+			this._buffer.getEOL() === '\n'
+				? model.EndOfLineSequence.LF
+				: model.EndOfLineSequence.CRLF
+		);
 	}
 
 	public getLineMinColumn(lineNumber: number): number {
