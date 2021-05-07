@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Constants } from 'vs/base/common/uint';
-import { Range, IRange } from 'vs/editor/common/core/range';
+import { Range } from 'vs/editor/common/core/range';
 import { TrackedRangeStickiness, IModelDeltaDecoration, IModelDecorationOptions, OverviewRulerLane } from 'vs/editor/common/model';
 import { IDebugService, IStackFrame } from 'vs/workbench/contrib/debug/common/debug';
 import { registerThemingParticipant, themeColorFromId, ThemeIcon } from 'vs/platform/theme/common/themeService';
@@ -53,7 +53,7 @@ const FOCUSED_STACK_FRAME_DECORATION: IModelDecorationOptions = {
 	stickiness
 };
 
-export function createDecorationsForStackFrame(stackFrame: IStackFrame, topStackFrameRange: IRange | undefined, isFocusedSession: boolean): IModelDeltaDecoration[] {
+export function createDecorationsForStackFrame(stackFrame: IStackFrame, isFocusedSession: boolean): IModelDeltaDecoration[] {
 	// only show decorations for the currently focused thread.
 	const result: IModelDeltaDecoration[] = [];
 	const columnUntilEOLRange = new Range(stackFrame.range.startLineNumber, stackFrame.range.startColumn, stackFrame.range.startLineNumber, Constants.MAX_SAFE_SMALL_INTEGER);
@@ -75,13 +75,12 @@ export function createDecorationsForStackFrame(stackFrame: IStackFrame, topStack
 			range: columnUntilEOLRange
 		});
 
-		if (topStackFrameRange && topStackFrameRange.startLineNumber === stackFrame.range.startLineNumber && topStackFrameRange.startColumn !== stackFrame.range.startColumn) {
+		if (stackFrame.range.startColumn > 1) {
 			result.push({
 				options: TOP_STACK_FRAME_INLINE_DECORATION,
 				range: columnUntilEOLRange
 			});
 		}
-		topStackFrameRange = columnUntilEOLRange;
 	} else {
 		if (isFocusedSession) {
 			result.push({
@@ -102,7 +101,6 @@ export function createDecorationsForStackFrame(stackFrame: IStackFrame, topStack
 export class CallStackEditorContribution implements IEditorContribution {
 	private toDispose: IDisposable[] = [];
 	private decorationIds: string[] = [];
-	private topStackFrameRange: Range | undefined;
 
 	constructor(
 		private readonly editor: ICodeEditor,
@@ -127,17 +125,21 @@ export class CallStackEditorContribution implements IEditorContribution {
 			const isSessionFocused = s === focusedStackFrame?.thread.session;
 			s.getAllThreads().forEach(t => {
 				if (t.stopped) {
-					let candidateStackFrame = t === focusedStackFrame?.thread ? focusedStackFrame : undefined;
-					if (!candidateStackFrame) {
-						const callStack = t.getCallStack();
-						if (callStack.length) {
-							candidateStackFrame = callStack[0];
+					const callStack = t.getCallStack();
+					const stackFrames: IStackFrame[] = [];
+					if (callStack.length > 0) {
+						// Always decorate top stack frame, and decorate focused stack frame if it is not the top stack frame
+						if (focusedStackFrame && !focusedStackFrame.equals(callStack[0])) {
+							stackFrames.push(focusedStackFrame);
 						}
+						stackFrames.push(callStack[0]);
 					}
 
-					if (candidateStackFrame && this.uriIdentityService.extUri.isEqual(candidateStackFrame.source.uri, this.editor.getModel()?.uri)) {
-						decorations.push(...createDecorationsForStackFrame(candidateStackFrame, this.topStackFrameRange, isSessionFocused));
-					}
+					stackFrames.forEach(candidateStackFrame => {
+						if (candidateStackFrame && this.uriIdentityService.extUri.isEqual(candidateStackFrame.source.uri, this.editor.getModel()?.uri)) {
+							decorations.push(...createDecorationsForStackFrame(candidateStackFrame, isSessionFocused));
+						}
+					});
 				}
 			});
 		});

@@ -3,21 +3,19 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { localize } from 'vs/nls';
 import { URI } from 'vs/base/common/uri';
-import { EncodingMode, IFileEditorInput, Verbosity, GroupIdentifier, IMoveResult, isTextEditorPane } from 'vs/workbench/common/editor';
+import { IFileEditorInput, Verbosity, GroupIdentifier, IMoveResult, isTextEditorPane } from 'vs/workbench/common/editor';
 import { AbstractTextResourceEditorInput } from 'vs/workbench/common/editor/textResourceEditorInput';
 import { BinaryEditorModel } from 'vs/workbench/common/editor/binaryEditorModel';
 import { FileOperationError, FileOperationResult, IFileService } from 'vs/platform/files/common/files';
-import { ITextFileService, TextFileEditorModelState, TextFileLoadReason, TextFileOperationError, TextFileOperationResult, ITextFileEditorModel } from 'vs/workbench/services/textfile/common/textfiles';
+import { ITextFileService, TextFileEditorModelState, TextFileResolveReason, TextFileOperationError, TextFileOperationResult, ITextFileEditorModel, EncodingMode } from 'vs/workbench/services/textfile/common/textfiles';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IReference, dispose, DisposableStore } from 'vs/base/common/lifecycle';
 import { ITextModelService } from 'vs/editor/common/services/resolverService';
 import { FILE_EDITOR_INPUT_ID, TEXT_FILE_EDITOR_ID, BINARY_FILE_EDITOR_ID } from 'vs/workbench/contrib/files/common/files';
 import { ILabelService } from 'vs/platform/label/common/label';
-import { IFilesConfigurationService } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
+import { AutoSaveMode, IFilesConfigurationService } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { isEqual } from 'vs/base/common/resources';
 import { Event } from 'vs/base/common/event';
 import { IEditorViewState } from 'vs/editor/common/editorCommon';
@@ -34,6 +32,10 @@ const enum ForceOpenAs {
  */
 export class FileEditorInput extends AbstractTextResourceEditorInput implements IFileEditorInput {
 
+	override get typeId(): string {
+		return FILE_EDITOR_INPUT_ID;
+	}
+
 	private preferredName: string | undefined;
 	private preferredDescription: string | undefined;
 	private preferredEncoding: string | undefined;
@@ -44,7 +46,7 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 	private model: ITextFileEditorModel | undefined = undefined;
 	private cachedTextFileModelReference: IReference<ITextFileEditorModel> | undefined = undefined;
 
-	private readonly modelListeners: DisposableStore = this._register(new DisposableStore());
+	private readonly modelListeners = this._register(new DisposableStore());
 
 	constructor(
 		resource: URI,
@@ -58,11 +60,10 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		@ITextModelService private readonly textModelResolverService: ITextModelService,
 		@ILabelService labelService: ILabelService,
 		@IFileService fileService: IFileService,
-		@IFilesConfigurationService filesConfigurationService: IFilesConfigurationService,
-		@IEditorService editorService: IEditorService,
-		@IEditorGroupsService editorGroupService: IEditorGroupsService
+		@IFilesConfigurationService private readonly filesConfigurationService: IFilesConfigurationService,
+		@IEditorService editorService: IEditorService
 	) {
-		super(resource, preferredResource, editorService, editorGroupService, textFileService, labelService, fileService, filesConfigurationService);
+		super(resource, preferredResource, editorService, textFileService, labelService, fileService);
 
 		this.model = this.textFileService.files.get(resource);
 
@@ -82,17 +83,13 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 			this.setPreferredMode(preferredMode);
 		}
 
+		// Attach to model that matches our resource once created
+		this._register(this.textFileService.files.onDidCreate(model => this.onDidCreateTextFileModel(model)));
+
 		// If a file model already exists, make sure to wire it in
 		if (this.model) {
 			this.registerModelListeners(this.model);
 		}
-	}
-
-	protected registerListeners(): void {
-		super.registerListeners();
-
-		// Attach to model that matches our resource once created
-		this._register(this.textFileService.files.onDidCreate(model => this.onDidCreateTextFileModel(model)));
 	}
 
 	private onDidCreateTextFileModel(model: ITextFileEditorModel): void {
@@ -121,18 +118,14 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		this.modelListeners.add(model.onDidSaveError(() => this._onDidChangeDirty.fire()));
 
 		// remove model association once it gets disposed
-		this.modelListeners.add(Event.once(model.onDispose)(() => {
+		this.modelListeners.add(Event.once(model.onWillDispose)(() => {
 			this.modelListeners.clear();
 			this.model = undefined;
 		}));
 	}
 
-	getTypeId(): string {
-		return FILE_EDITOR_INPUT_ID;
-	}
-
-	getName(): string {
-		return this.preferredName || this.decorateLabel(super.getName());
+	override getName(): string {
+		return this.preferredName || super.getName();
 	}
 
 	setPreferredName(name: string): void {
@@ -155,7 +148,7 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		return this.preferredName;
 	}
 
-	getDescription(verbosity?: Verbosity): string | undefined {
+	override getDescription(verbosity?: Verbosity): string | undefined {
 		return this.preferredDescription || super.getDescription(verbosity);
 	}
 
@@ -175,35 +168,6 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		return this.preferredDescription;
 	}
 
-	getTitle(verbosity: Verbosity): string {
-		switch (verbosity) {
-			case Verbosity.SHORT:
-				return this.decorateLabel(super.getName());
-			case Verbosity.MEDIUM:
-			case Verbosity.LONG:
-				return this.decorateLabel(super.getTitle(verbosity));
-		}
-	}
-
-	private decorateLabel(label: string): string {
-		const orphaned = this.model?.hasState(TextFileEditorModelState.ORPHAN);
-		const readonly = this.isReadonly();
-
-		if (orphaned && readonly) {
-			return localize('orphanedReadonlyFile', "{0} (deleted, read-only)", label);
-		}
-
-		if (orphaned) {
-			return localize('orphanedFile', "{0} (deleted)", label);
-		}
-
-		if (readonly) {
-			return localize('readonlyFile', "{0} (read-only)", label);
-		}
-
-		return label;
-	}
-
 	getEncoding(): string | undefined {
 		if (this.model) {
 			return this.model.getEncoding();
@@ -216,10 +180,10 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		return this.preferredEncoding;
 	}
 
-	setEncoding(encoding: string, mode: EncodingMode): void {
+	async setEncoding(encoding: string, mode: EncodingMode): Promise<void> {
 		this.setPreferredEncoding(encoding);
 
-		this.model?.setEncoding(encoding, mode);
+		return this.model?.setEncoding(encoding, mode);
 	}
 
 	setPreferredEncoding(encoding: string): void {
@@ -254,11 +218,11 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		this.forceOpenAs = ForceOpenAs.Binary;
 	}
 
-	isDirty(): boolean {
+	override isDirty(): boolean {
 		return !!(this.model?.isDirty());
 	}
 
-	isReadonly(): boolean {
+	override isReadonly(): boolean {
 		if (this.model) {
 			return this.model.isReadonly();
 		}
@@ -266,7 +230,15 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		return super.isReadonly();
 	}
 
-	isSaving(): boolean {
+	override isOrphaned(): boolean {
+		if (this.model) {
+			return this.model.hasState(TextFileEditorModelState.ORPHAN);
+		}
+
+		return super.isOrphaned();
+	}
+
+	override isSaving(): boolean {
 		if (this.model?.hasState(TextFileEditorModelState.SAVED) || this.model?.hasState(TextFileEditorModelState.CONFLICT) || this.model?.hasState(TextFileEditorModelState.ERROR)) {
 			return false; // require the model to be dirty and not in conflict or error state
 		}
@@ -276,14 +248,18 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		// and it could result in bad UX where an editor can be closed even though
 		// it shows up as dirty and has not finished saving yet.
 
+		if (this.filesConfigurationService.getAutoSaveMode() === AutoSaveMode.AFTER_SHORT_DELAY) {
+			return true; // a short auto save is configured, treat this as being saved
+		}
+
 		return super.isSaving();
 	}
 
-	getPreferredEditorId(candidates: string[]): string {
+	override getPreferredEditorId(candidates: string[]): string {
 		return this.forceOpenAs === ForceOpenAs.Binary ? BINARY_FILE_EDITOR_ID : TEXT_FILE_EDITOR_ID;
 	}
 
-	resolve(): Promise<ITextFileEditorModel | BinaryEditorModel> {
+	override resolve(): Promise<ITextFileEditorModel | BinaryEditorModel> {
 
 		// Resolve as binary
 		if (this.forceOpenAs === ForceOpenAs.Binary) {
@@ -304,7 +280,7 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 				encoding: this.preferredEncoding,
 				reload: { async: true }, // trigger a reload of the model if it exists already but do not wait to show the model
 				allowBinary: this.forceOpenAs === ForceOpenAs.Text,
-				reason: TextFileLoadReason.EDITOR
+				reason: TextFileResolveReason.EDITOR
 			});
 
 			// This is a bit ugly, because we first resolve the model and then resolve a model reference. the reason being that binary
@@ -341,14 +317,17 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 	}
 
 	private async doResolveAsBinary(): Promise<BinaryEditorModel> {
-		return this.instantiationService.createInstance(BinaryEditorModel, this.preferredResource, this.getName()).load();
+		const model = this.instantiationService.createInstance(BinaryEditorModel, this.preferredResource, this.getName());
+		await model.resolve();
+
+		return model;
 	}
 
 	isResolved(): boolean {
 		return !!this.model;
 	}
 
-	rename(group: GroupIdentifier, target: URI): IMoveResult {
+	override rename(group: GroupIdentifier, target: URI): IMoveResult {
 		return {
 			editor: {
 				resource: target,
@@ -362,7 +341,7 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 
 	private getViewStateFor(group: GroupIdentifier): IEditorViewState | undefined {
 		for (const editorPane of this.editorService.visibleEditorPanes) {
-			if (editorPane.group.id === group && isEqual(editorPane.input.resource, this.resource)) {
+			if (editorPane.group.id === group && this.matches(editorPane.input)) {
 				if (isTextEditorPane(editorPane)) {
 					return editorPane.getViewState();
 				}
@@ -372,7 +351,7 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		return undefined;
 	}
 
-	matches(otherInput: unknown): boolean {
+	override matches(otherInput: unknown): boolean {
 		if (otherInput === this) {
 			return true;
 		}
@@ -384,7 +363,7 @@ export class FileEditorInput extends AbstractTextResourceEditorInput implements 
 		return false;
 	}
 
-	dispose(): void {
+	override dispose(): void {
 
 		// Model
 		this.model = undefined;

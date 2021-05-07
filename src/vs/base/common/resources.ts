@@ -42,15 +42,15 @@ export interface IExtUri {
 	/**
 	 * Tests whether a `candidate` URI is a parent or equal of a given `base` URI.
 	 *
-	 * @param base A uri which is "longer"
-	 * @param parentCandidate A uri which is "shorter" then `base`
+	 * @param base A uri which is "longer" or at least same length as `parentCandidate`
+	 * @param parentCandidate A uri which is "shorter" or up to same length as `base`
 	 * @param ignoreFragment Ignore the fragment (defaults to `false`)
 	 */
 	isEqualOrParent(base: URI, parentCandidate: URI, ignoreFragment?: boolean): boolean;
 
 	/**
 	 * Creates a key from a resource URI to be used to resource comparison and for resource maps.
-	 * @see ResourceMap
+	 * @see {@link ResourceMap}
 	 * @param uri Uri
 	 * @param ignoreFragment Ignore the fragment (defaults to `false`)
 	 */

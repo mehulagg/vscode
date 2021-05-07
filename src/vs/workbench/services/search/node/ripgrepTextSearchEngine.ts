@@ -199,9 +199,9 @@ export class RipgrepParser extends EventEmitter {
 	}
 
 
-	on(event: 'result', listener: (result: TextSearchResult) => void): this;
-	on(event: 'hitLimit', listener: () => void): this;
-	on(event: string, listener: (...args: any[]) => void): this {
+	override on(event: 'result', listener: (result: TextSearchResult) => void): this;
+	override on(event: 'hitLimit', listener: () => void): this;
+	override on(event: string, listener: (...args: any[]) => void): this {
 		super.on(event, listener);
 		return this;
 	}
@@ -283,6 +283,18 @@ export class RipgrepParser extends EventEmitter {
 		let prevMatchEnd = 0;
 		let prevMatchEndCol = 0;
 		let prevMatchEndLine = lineNumber;
+
+		// it looks like certain regexes can match a line, but cause rg to not
+		// emit any specific submatches for that line.
+		// https://github.com/microsoft/vscode/issues/100569#issuecomment-738496991
+		if (data.submatches.length === 0) {
+			data.submatches.push(
+				fullText.length
+					? { start: 0, end: 1, match: { text: fullText[0] } }
+					: { start: 0, end: 0, match: { text: '' } }
+			);
+		}
+
 		const ranges = coalesce(data.submatches.map((match, i) => {
 			if (this.hitLimit) {
 				return null;
@@ -373,13 +385,7 @@ function getRgArgs(query: TextSearchQuery, options: TextSearchOptions): string[]
 
 	if (otherIncludes && otherIncludes.length) {
 		const uniqueOthers = new Set<string>();
-		otherIncludes.forEach(other => {
-			if (!other.endsWith('/**')) {
-				other += '/**';
-			}
-
-			uniqueOthers.add(other);
-		});
+		otherIncludes.forEach(other => { uniqueOthers.add(other); });
 
 		args.push('-g', '!*');
 		uniqueOthers
@@ -496,10 +502,6 @@ function getRgArgs(query: TextSearchQuery, options: TextSearchOptions): string[]
  */
 export function spreadGlobComponents(globArg: string): string[] {
 	const components = splitGlobAware(globArg, '/');
-	if (components[components.length - 1] !== '**') {
-		components.push('**');
-	}
-
 	return components.map((_, i) => components.slice(0, i + 1).join('/'));
 }
 
@@ -574,9 +576,15 @@ export function fixRegexNewline(pattern: string): string {
 			} else if (context.some(isLookBehind)) {
 				// no-op in a lookbehind, see #100569
 			} else if (parent.type === 'CharacterClass') {
-				// in a bracket expr, [a-z\n] -> (?:[a-z]|\r?\n)
-				const otherContent = pattern.slice(parent.start + 1, char.start) + pattern.slice(char.end, parent.end - 1);
-				replace(parent.start, parent.end, otherContent === '' ? '\\r?\\n' : `(?:[${otherContent}]|\\r?\\n)`);
+				if (parent.negate) {
+					// negative bracket expr, [^a-z\n] -> (?![a-z]|\r?\n)
+					const otherContent = pattern.slice(parent.start + 2, char.start) + pattern.slice(char.end, parent.end - 1);
+					replace(parent.start, parent.end, '(?!\\r?\\n' + (otherContent ? `|[${otherContent}]` : '') + ')');
+				} else {
+					// positive bracket expr, [a-z\n] -> (?:[a-z]|\r?\n)
+					const otherContent = pattern.slice(parent.start + 1, char.start) + pattern.slice(char.end, parent.end - 1);
+					replace(parent.start, parent.end, otherContent === '' ? '\\r?\\n' : `(?:[${otherContent}]|\\r?\\n)`);
+				}
 			} else if (parent.type === 'Quantifier') {
 				replace(char.start, char.end, '(?:\\r?\\n)');
 			}

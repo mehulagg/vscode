@@ -258,32 +258,31 @@ export class TypeOperations {
 		return commands;
 	}
 
-	public static replacePreviousChar(prevEditOperationType: EditOperationType, config: CursorConfiguration, model: ITextModel, selections: Selection[], txt: string, replaceCharCnt: number): EditOperationResult {
-		let commands: Array<ICommand | null> = [];
-		for (let i = 0, len = selections.length; i < len; i++) {
-			const selection = selections[i];
-			if (!selection.isEmpty()) {
-				// looks like https://github.com/microsoft/vscode/issues/2773
-				// where a cursor operation occurred before a canceled composition
-				// => ignore composition
-				commands[i] = null;
-				continue;
-			}
-			const pos = selection.getPosition();
-			const startColumn = Math.max(1, pos.column - replaceCharCnt);
-			const range = new Range(pos.lineNumber, startColumn, pos.lineNumber, pos.column);
-			const oldText = model.getValueInRange(range);
-			if (oldText === txt) {
-				// => ignore composition that doesn't do anything
-				commands[i] = null;
-				continue;
-			}
-			commands[i] = new ReplaceCommand(range, txt);
-		}
-		return new EditOperationResult(EditOperationType.Typing, commands, {
-			shouldPushStackElementBefore: (prevEditOperationType !== EditOperationType.Typing),
+	public static compositionType(prevEditOperationType: EditOperationType, config: CursorConfiguration, model: ITextModel, selections: Selection[], text: string, replacePrevCharCnt: number, replaceNextCharCnt: number, positionDelta: number): EditOperationResult {
+		const commands = selections.map(selection => this._compositionType(model, selection, text, replacePrevCharCnt, replaceNextCharCnt, positionDelta));
+		return new EditOperationResult(EditOperationType.TypingOther, commands, {
+			shouldPushStackElementBefore: shouldPushStackElementBetween(prevEditOperationType, EditOperationType.TypingOther),
 			shouldPushStackElementAfter: false
 		});
+	}
+
+	private static _compositionType(model: ITextModel, selection: Selection, text: string, replacePrevCharCnt: number, replaceNextCharCnt: number, positionDelta: number): ICommand | null {
+		if (!selection.isEmpty()) {
+			// looks like https://github.com/microsoft/vscode/issues/2773
+			// where a cursor operation occurred before a canceled composition
+			// => ignore composition
+			return null;
+		}
+		const pos = selection.getPosition();
+		const startColumn = Math.max(1, pos.column - replacePrevCharCnt);
+		const endColumn = Math.min(model.getLineMaxColumn(pos.lineNumber), pos.column + replaceNextCharCnt);
+		const range = new Range(pos.lineNumber, startColumn, pos.lineNumber, endColumn);
+		const oldText = model.getValueInRange(range);
+		if (oldText === text && positionDelta === 0) {
+			// => ignore composition that doesn't do anything
+			return null;
+		}
+		return new ReplaceCommandWithOffsetCursorState(range, text, 0, positionDelta);
 	}
 
 	private static _typeCommand(range: Range, text: string, keepPosition: boolean): ICommand {
@@ -351,13 +350,6 @@ export class TypeOperations {
 			if (ir) {
 				let oldEndViewColumn = CursorColumns.visibleColumnFromColumn2(config, model, range.getEndPosition());
 				const oldEndColumn = range.endColumn;
-
-				let beforeText = '\n';
-				if (indentation !== config.normalizeIndentation(ir.beforeEnter)) {
-					beforeText = config.normalizeIndentation(ir.beforeEnter) + lineText.substring(indentation.length, range.startColumn - 1) + '\n';
-					range = new Range(range.startLineNumber, 1, range.endLineNumber, range.endColumn);
-				}
-
 				const newLineContent = model.getLineContent(range.endLineNumber);
 				const firstNonWhitespace = strings.firstNonWhitespaceIndex(newLineContent);
 				if (firstNonWhitespace >= 0) {
@@ -367,7 +359,7 @@ export class TypeOperations {
 				}
 
 				if (keepPosition) {
-					return new ReplaceCommandWithoutChangingPosition(range, beforeText + config.normalizeIndentation(ir.afterEnter), true);
+					return new ReplaceCommandWithoutChangingPosition(range, '\n' + config.normalizeIndentation(ir.afterEnter), true);
 				} else {
 					let offset = 0;
 					if (oldEndColumn <= firstNonWhitespace + 1) {
@@ -376,7 +368,7 @@ export class TypeOperations {
 						}
 						offset = Math.min(oldEndViewColumn + 1 - config.normalizeIndentation(ir.afterEnter).length - 1, 0);
 					}
-					return new ReplaceCommandWithOffsetCursorState(range, beforeText + config.normalizeIndentation(ir.afterEnter), 0, offset, true);
+					return new ReplaceCommandWithOffsetCursorState(range, '\n' + config.normalizeIndentation(ir.afterEnter), 0, offset, true);
 				}
 			}
 		}
@@ -492,8 +484,8 @@ export class TypeOperations {
 			const typeSelection = new Range(position.lineNumber, position.column, position.lineNumber, position.column + 1);
 			commands[i] = new ReplaceCommand(typeSelection, ch);
 		}
-		return new EditOperationResult(EditOperationType.Typing, commands, {
-			shouldPushStackElementBefore: (prevEditOperationType !== EditOperationType.Typing),
+		return new EditOperationResult(EditOperationType.TypingOther, commands, {
+			shouldPushStackElementBefore: shouldPushStackElementBetween(prevEditOperationType, EditOperationType.TypingOther),
 			shouldPushStackElementAfter: false
 		});
 	}
@@ -644,7 +636,7 @@ export class TypeOperations {
 			const selection = selections[i];
 			commands[i] = new TypeWithAutoClosingCommand(selection, ch, insertOpenCharacter, autoClosingPairClose);
 		}
-		return new EditOperationResult(EditOperationType.Typing, commands, {
+		return new EditOperationResult(EditOperationType.TypingOther, commands, {
 			shouldPushStackElementBefore: true,
 			shouldPushStackElementAfter: false
 		});
@@ -770,7 +762,7 @@ export class TypeOperations {
 				let typeSelection = new Range(position.lineNumber, 1, position.lineNumber, position.column);
 
 				const command = new ReplaceCommand(typeSelection, typeText);
-				return new EditOperationResult(EditOperationType.Typing, [command], {
+				return new EditOperationResult(getTypingOperation(typeText, prevEditOperationType), [command], {
 					shouldPushStackElementBefore: false,
 					shouldPushStackElementAfter: true
 				});
@@ -811,7 +803,7 @@ export class TypeOperations {
 		if (this._isAutoClosingOvertype(config, model, selections, autoClosedCharacters, ch)) {
 			// Unfortunately, the close character is at this point "doubled", so we need to delete it...
 			const commands = selections.map(s => new ReplaceCommand(new Range(s.positionLineNumber, s.positionColumn, s.positionLineNumber, s.positionColumn + 1), '', false));
-			return new EditOperationResult(EditOperationType.Typing, commands, {
+			return new EditOperationResult(EditOperationType.TypingOther, commands, {
 				shouldPushStackElementBefore: true,
 				shouldPushStackElementAfter: false
 			});
@@ -832,7 +824,7 @@ export class TypeOperations {
 			for (let i = 0, len = selections.length; i < len; i++) {
 				commands[i] = TypeOperations._enter(config, model, false, selections[i]);
 			}
-			return new EditOperationResult(EditOperationType.Typing, commands, {
+			return new EditOperationResult(EditOperationType.TypingOther, commands, {
 				shouldPushStackElementBefore: true,
 				shouldPushStackElementAfter: false,
 			});
@@ -849,7 +841,7 @@ export class TypeOperations {
 				}
 			}
 			if (!autoIndentFails) {
-				return new EditOperationResult(EditOperationType.Typing, commands, {
+				return new EditOperationResult(EditOperationType.TypingOther, commands, {
 					shouldPushStackElementBefore: true,
 					shouldPushStackElementAfter: false,
 				});
@@ -885,12 +877,10 @@ export class TypeOperations {
 		for (let i = 0, len = selections.length; i < len; i++) {
 			commands[i] = new ReplaceCommand(selections[i], ch);
 		}
-		let shouldPushStackElementBefore = (prevEditOperationType !== EditOperationType.Typing);
-		if (ch === ' ') {
-			shouldPushStackElementBefore = true;
-		}
-		return new EditOperationResult(EditOperationType.Typing, commands, {
-			shouldPushStackElementBefore: shouldPushStackElementBefore,
+
+		const opType = getTypingOperation(ch, prevEditOperationType);
+		return new EditOperationResult(opType, commands, {
+			shouldPushStackElementBefore: shouldPushStackElementBetween(prevEditOperationType, opType),
 			shouldPushStackElementAfter: false
 		});
 	}
@@ -900,8 +890,9 @@ export class TypeOperations {
 		for (let i = 0, len = selections.length; i < len; i++) {
 			commands[i] = new ReplaceCommand(selections[i], str);
 		}
-		return new EditOperationResult(EditOperationType.Typing, commands, {
-			shouldPushStackElementBefore: (prevEditOperationType !== EditOperationType.Typing),
+		const opType = getTypingOperation(str, prevEditOperationType);
+		return new EditOperationResult(opType, commands, {
+			shouldPushStackElementBefore: shouldPushStackElementBetween(prevEditOperationType, opType),
 			shouldPushStackElementAfter: false
 		});
 	}
@@ -965,11 +956,48 @@ export class TypeWithAutoClosingCommand extends ReplaceCommandWithOffsetCursorSt
 		this.enclosingRange = null;
 	}
 
-	public computeCursorState(model: ITextModel, helper: ICursorStateComputerData): Selection {
+	public override computeCursorState(model: ITextModel, helper: ICursorStateComputerData): Selection {
 		let inverseEditOperations = helper.getInverseEditOperations();
 		let range = inverseEditOperations[0].range;
 		this.closeCharacterRange = new Range(range.startLineNumber, range.endColumn - this._closeCharacter.length, range.endLineNumber, range.endColumn);
 		this.enclosingRange = new Range(range.startLineNumber, range.endColumn - this._openCharacter.length - this._closeCharacter.length, range.endLineNumber, range.endColumn);
 		return super.computeCursorState(model, helper);
 	}
+}
+
+function getTypingOperation(typedText: string, previousTypingOperation: EditOperationType): EditOperationType {
+	if (typedText === ' ') {
+		return previousTypingOperation === EditOperationType.TypingFirstSpace
+			|| previousTypingOperation === EditOperationType.TypingConsecutiveSpace
+			? EditOperationType.TypingConsecutiveSpace
+			: EditOperationType.TypingFirstSpace;
+	}
+
+	return EditOperationType.TypingOther;
+}
+
+function shouldPushStackElementBetween(previousTypingOperation: EditOperationType, typingOperation: EditOperationType): boolean {
+	if (isTypingOperation(previousTypingOperation) && !isTypingOperation(typingOperation)) {
+		// Always set an undo stop before non-type operations
+		return true;
+	}
+	if (previousTypingOperation === EditOperationType.TypingFirstSpace) {
+		// `abc |d`: No undo stop
+		// `abc  |d`: Undo stop
+		return false;
+	}
+	// Insert undo stop between different operation types
+	return normalizeOperationType(previousTypingOperation) !== normalizeOperationType(typingOperation);
+}
+
+function normalizeOperationType(type: EditOperationType): EditOperationType | 'space' {
+	return (type === EditOperationType.TypingConsecutiveSpace || type === EditOperationType.TypingFirstSpace)
+		? 'space'
+		: type;
+}
+
+function isTypingOperation(type: EditOperationType): boolean {
+	return type === EditOperationType.TypingOther
+		|| type === EditOperationType.TypingFirstSpace
+		|| type === EditOperationType.TypingConsecutiveSpace;
 }

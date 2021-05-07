@@ -19,6 +19,8 @@ import { BulkCellEdits, ResourceNotebookCellEdit } from 'vs/workbench/contrib/bu
 import { UndoRedoGroup, UndoRedoSource } from 'vs/platform/undoRedo/common/undoRedo';
 import { LinkedList } from 'vs/base/common/linkedList';
 import { CancellationToken } from 'vs/base/common/cancellation';
+import { ILifecycleService } from 'vs/workbench/services/lifecycle/common/lifecycle';
+import { IDialogService } from 'vs/platform/dialogs/common/dialogs';
 
 class BulkEdit {
 
@@ -30,6 +32,7 @@ class BulkEdit {
 		private readonly _edits: ResourceEdit[],
 		private readonly _undoRedoGroup: UndoRedoGroup,
 		private readonly _undoRedoSource: UndoRedoSource | undefined,
+		private readonly _confirmBeforeUndo: boolean,
 		@IInstantiationService private readonly _instaService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
 	) {
@@ -63,7 +66,9 @@ class BulkEdit {
 			}
 		}
 
-		this._progress.report({ increment: 0, total: 100 });
+		// Show infinte progress when there is only 1 item since we do not know how long it takes
+		const increment = this._edits.length > 1 ? 0 : undefined;
+		this._progress.report({ increment, total: 100 });
 		// Increment by percentage points since progress API expects that
 		const progress: IProgress<void> = { report: _ => this._progress.report({ increment: 100 / this._edits.length }) };
 
@@ -74,7 +79,7 @@ class BulkEdit {
 			}
 			const group = this._edits.slice(index, index + range);
 			if (group[0] instanceof ResourceFileEdit) {
-				await this._performFileEdits(<ResourceFileEdit[]>group, this._undoRedoGroup, this._undoRedoSource, progress);
+				await this._performFileEdits(<ResourceFileEdit[]>group, this._undoRedoGroup, this._undoRedoSource, this._confirmBeforeUndo, progress);
 			} else if (group[0] instanceof ResourceTextEdit) {
 				await this._performTextEdits(<ResourceTextEdit[]>group, this._undoRedoGroup, this._undoRedoSource, progress);
 			} else if (group[0] instanceof ResourceNotebookCellEdit) {
@@ -86,9 +91,9 @@ class BulkEdit {
 		}
 	}
 
-	private async _performFileEdits(edits: ResourceFileEdit[], undoRedoGroup: UndoRedoGroup, undoRedoSource: UndoRedoSource | undefined, progress: IProgress<void>) {
+	private async _performFileEdits(edits: ResourceFileEdit[], undoRedoGroup: UndoRedoGroup, undoRedoSource: UndoRedoSource | undefined, confirmBeforeUndo: boolean, progress: IProgress<void>) {
 		this._logService.debug('_performFileEdits', JSON.stringify(edits));
-		const model = this._instaService.createInstance(BulkFileEdits, this._label || localize('workspaceEdit', "Workspace Edit"), undoRedoGroup, undoRedoSource, progress, this._token, edits);
+		const model = this._instaService.createInstance(BulkFileEdits, this._label || localize('workspaceEdit', "Workspace Edit"), undoRedoGroup, undoRedoSource, confirmBeforeUndo, progress, this._token, edits);
 		await model.apply();
 	}
 
@@ -116,6 +121,8 @@ export class BulkEditService implements IBulkEditService {
 		@IInstantiationService private readonly _instaService: IInstantiationService,
 		@ILogService private readonly _logService: ILogService,
 		@IEditorService private readonly _editorService: IEditorService,
+		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
+		@IDialogService private readonly _dialogService: IDialogService
 	) { }
 
 	setPreviewHandler(handler: IBulkEditPreviewHandler): IDisposable {
@@ -173,18 +180,22 @@ export class BulkEditService implements IBulkEditService {
 			undoRedoGroupRemove = this._activeUndoRedoGroups.push(undoRedoGroup);
 		}
 
+		const label = options?.quotableLabel || options?.label;
 		const bulkEdit = this._instaService.createInstance(
 			BulkEdit,
-			options?.quotableLabel || options?.label,
+			label,
 			codeEditor,
 			options?.progress ?? Progress.None,
 			options?.token ?? CancellationToken.None,
 			edits,
 			undoRedoGroup,
-			options?.undoRedoSource
+			options?.undoRedoSource,
+			!!options?.confirmBeforeUndo
 		);
 
+		let listener: IDisposable | undefined;
 		try {
+			listener = this._lifecycleService.onBeforeShutdown(e => e.veto(this.shouldVeto(label), 'veto.blukEditService'));
 			await bulkEdit.perform();
 			return { ariaSummary: bulkEdit.ariaMessage() };
 		} catch (err) {
@@ -193,8 +204,19 @@ export class BulkEditService implements IBulkEditService {
 			this._logService.error(err);
 			throw err;
 		} finally {
+			listener?.dispose();
 			undoRedoGroupRemove();
 		}
+	}
+
+	private async shouldVeto(label: string | undefined): Promise<boolean> {
+		label = label || localize('fileOperation', "File operation");
+		const result = await this._dialogService.confirm({
+			message: localize('areYouSureQuiteBulkEdit', "Are you sure you want to quit? '{0}' is in progress.", label),
+			primaryButton: localize('quit', "Quit")
+		});
+
+		return !result.confirmed;
 	}
 }
 

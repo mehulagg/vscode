@@ -20,7 +20,7 @@ import { IContextViewService } from 'vs/platform/contextview/browser/contextView
 import { IThemeService } from 'vs/platform/theme/common/themeService';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IFilesConfiguration, VIEW_ID } from 'vs/workbench/contrib/files/common/files';
-import { dirname, joinPath, basename, distinctParents, basenameOrAuthority } from 'vs/base/common/resources';
+import { dirname, joinPath, basename, distinctParents } from 'vs/base/common/resources';
 import { InputBox, MessageType } from 'vs/base/browser/ui/inputbox/inputBox';
 import { localize } from 'vs/nls';
 import { attachInputBoxStyler } from 'vs/platform/theme/common/styler';
@@ -29,7 +29,7 @@ import { IKeyboardEvent } from 'vs/base/browser/keyboardEvent';
 import { equals, deepClone } from 'vs/base/common/objects';
 import * as path from 'vs/base/common/path';
 import { ExplorerItem, NewExplorerItem } from 'vs/workbench/contrib/files/common/explorerModel';
-import { compareFileNamesDefault, compareFileExtensionsDefault } from 'vs/base/common/comparers';
+import { compareFileExtensionsDefault, compareFileNamesDefault, compareFileNamesUpper, compareFileExtensionsUpper, compareFileNamesLower, compareFileExtensionsLower, compareFileNamesUnicode, compareFileExtensionsUnicode } from 'vs/base/common/comparers';
 import { fillResourceDataTransfers, CodeDataTransfers, extractResources, containsDragType } from 'vs/workbench/browser/dnd';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IDragAndDropData, DataTransfers } from 'vs/base/browser/dnd';
@@ -94,7 +94,7 @@ export class ExplorerDataSource implements IAsyncDataSource<ExplorerItem | Explo
 			return Promise.resolve(element);
 		}
 
-		const sortOrder = this.explorerService.sortOrder;
+		const sortOrder = this.explorerService.sortOrderConfiguration.sortOrder;
 		const promise = element.fetchChildren(sortOrder).then(undefined, e => {
 
 			if (element instanceof ExplorerItem && element.isRoot) {
@@ -116,7 +116,7 @@ export class ExplorerDataSource implements IAsyncDataSource<ExplorerItem | Explo
 
 		this.progressService.withProgress({
 			location: ProgressLocation.Explorer,
-			delay: this.layoutService.isRestored() ? 800 : 1200 // less ugly initial startup
+			delay: this.layoutService.isRestored() ? 800 : 1500 // reduce progress visibility when still restoring
 		}, _progress => promise);
 
 		return promise;
@@ -451,7 +451,7 @@ export class FilesRenderer implements ICompressibleTreeRenderer<ExplorerItem, Fu
 			}),
 			DOM.addStandardDisposableListener(inputBox.inputElement, DOM.EventType.KEY_DOWN, (e: IKeyboardEvent) => {
 				if (e.equals(KeyCode.Enter)) {
-					if (inputBox.validate()) {
+					if (!inputBox.validate()) {
 						done(true, true);
 					}
 				} else if (e.equals(KeyCode.Escape)) {
@@ -532,8 +532,7 @@ interface CachedParsedExpression {
  * Makes sure that visible editors are always shown in the explorer even if they are filtered out by settings.
  */
 export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
-	private hiddenExpressionPerRoot: Map<string, CachedParsedExpression>;
-	private uriVisibilityMap = new Map<URI, boolean>();
+	private hiddenExpressionPerRoot = new Map<string, CachedParsedExpression>();
 	private editorsAffectingFilter = new Set<IEditorInput>();
 	private _onDidChange = new Emitter<void>();
 	private toDispose: IDisposable[] = [];
@@ -545,7 +544,6 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 		@IEditorService private readonly editorService: IEditorService,
 		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService
 	) {
-		this.hiddenExpressionPerRoot = new Map<string, CachedParsedExpression>();
 		this.toDispose.push(this.contextService.onDidChangeWorkspaceFolders(() => this.updateConfiguration()));
 		this.toDispose.push(this.configurationService.onDidChangeConfiguration((e) => {
 			if (e.affectsConfiguration('files.exclude')) {
@@ -555,26 +553,30 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 		this.toDispose.push(this.editorService.onDidVisibleEditorsChange(() => {
 			const editors = this.editorService.visibleEditors;
 			let shouldFire = false;
-			this.uriVisibilityMap.forEach((visible, uri) => {
-				if (!visible) {
-					editors.forEach(e => {
-						if (e.resource && this.uriIdentityService.extUri.isEqualOrParent(e.resource, uri)) {
-							// A filtered resource suddenly became visible since user opened an editor
-							shouldFire = true;
-						}
-					});
-				}
-			});
 
-			this.editorsAffectingFilter.forEach(e => {
+			for (const e of editors) {
+				if (!e.resource) {
+					continue;
+				}
+
+				const stat = this.explorerService.findClosest(e.resource);
+				if (stat && stat.isExcluded) {
+					// A filtered resource suddenly became visible since user opened an editor
+					shouldFire = true;
+					break;
+				}
+			}
+
+			for (const e of this.editorsAffectingFilter) {
 				if (!editors.includes(e)) {
 					// Editor that was affecting filtering is no longer visible
 					shouldFire = true;
+					break;
 				}
-			});
+			}
+
 			if (shouldFire) {
 				this.editorsAffectingFilter.clear();
-				this.uriVisibilityMap.clear();
 				this._onDidChange.fire();
 			}
 		}));
@@ -603,21 +605,12 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 
 		if (shouldFire) {
 			this.editorsAffectingFilter.clear();
-			this.uriVisibilityMap.clear();
 			this._onDidChange.fire();
 		}
 	}
 
 	filter(stat: ExplorerItem, parentVisibility: TreeVisibility): boolean {
-		const cachedVisibility = this.uriVisibilityMap.get(stat.resource);
-		if (typeof cachedVisibility === 'boolean') {
-			return cachedVisibility;
-		}
-
-		const isVisible = this.isVisible(stat, parentVisibility);
-		this.uriVisibilityMap.set(stat.resource, isVisible);
-
-		return isVisible;
+		return this.isVisible(stat, parentVisibility);
 	}
 
 	private isVisible(stat: ExplorerItem, parentVisibility: TreeVisibility): boolean {
@@ -626,7 +619,7 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 			stat.isExcluded = true;
 			return false;
 		}
-		if (this.explorerService.getEditableData(stat) || stat.isRoot) {
+		if (this.explorerService.getEditableData(stat)) {
 			return true; // always visible
 		}
 
@@ -636,7 +629,7 @@ export class FilesFilter implements ITreeFilter<ExplorerItem, FuzzyScore> {
 			stat.isExcluded = true;
 			const editors = this.editorService.visibleEditors;
 			const editor = editors.find(e => e.resource && this.uriIdentityService.extUri.isEqualOrParent(e.resource, stat.resource));
-			if (editor) {
+			if (editor && stat.root === this.explorerService.findClosestRoot(stat.resource)) {
 				this.editorsAffectingFilter.add(editor);
 				return true; // Show all opened files and their parents
 			}
@@ -676,7 +669,29 @@ export class FileSorter implements ITreeSorter<ExplorerItem> {
 			return 1;
 		}
 
-		const sortOrder = this.explorerService.sortOrder;
+		const sortOrder = this.explorerService.sortOrderConfiguration.sortOrder;
+		const lexicographicOptions = this.explorerService.sortOrderConfiguration.lexicographicOptions;
+
+		let compareFileNames;
+		let compareFileExtensions;
+		switch (lexicographicOptions) {
+			case 'upper':
+				compareFileNames = compareFileNamesUpper;
+				compareFileExtensions = compareFileExtensionsUpper;
+				break;
+			case 'lower':
+				compareFileNames = compareFileNamesLower;
+				compareFileExtensions = compareFileExtensionsLower;
+				break;
+			case 'unicode':
+				compareFileNames = compareFileNamesUnicode;
+				compareFileExtensions = compareFileExtensionsUnicode;
+				break;
+			default:
+				// 'default'
+				compareFileNames = compareFileNamesDefault;
+				compareFileExtensions = compareFileExtensionsDefault;
+		}
 
 		// Sort Directories
 		switch (sortOrder) {
@@ -690,7 +705,7 @@ export class FileSorter implements ITreeSorter<ExplorerItem> {
 				}
 
 				if (statA.isDirectory && statB.isDirectory) {
-					return compareFileNamesDefault(statA.name, statB.name);
+					return compareFileNames(statA.name, statB.name);
 				}
 
 				break;
@@ -724,17 +739,17 @@ export class FileSorter implements ITreeSorter<ExplorerItem> {
 		// Sort Files
 		switch (sortOrder) {
 			case 'type':
-				return compareFileExtensionsDefault(statA.name, statB.name);
+				return compareFileExtensions(statA.name, statB.name);
 
 			case 'modified':
 				if (statA.mtime !== statB.mtime) {
 					return (statA.mtime && statB.mtime && statA.mtime < statB.mtime) ? 1 : -1;
 				}
 
-				return compareFileNamesDefault(statA.name, statB.name);
+				return compareFileNames(statA.name, statB.name);
 
 			default: /* 'default', 'mixed', 'filesFirst' */
-				return compareFileNamesDefault(statA.name, statB.name);
+				return compareFileNames(statA.name, statB.name);
 		}
 	}
 }
@@ -982,7 +997,7 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 		}
 	}
 
-	drop(data: IDragAndDropData, target: ExplorerItem | undefined, targetIndex: number | undefined, originalEvent: DragEvent): void {
+	async drop(data: IDragAndDropData, target: ExplorerItem | undefined, targetIndex: number | undefined, originalEvent: DragEvent): Promise<void> {
 		this.compressedDropTargetDisposable.dispose();
 
 		// Find compressed target
@@ -1013,24 +1028,28 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 		if (data instanceof NativeDragAndDropData) {
 			const cts = new CancellationTokenSource();
 
-			// Indicate progress globally
-			try {
-				if (isWeb) {
-					const dropPromise = this.progressService.withProgress({
-						location: ProgressLocation.Window,
-						delay: 800,
-						cancellable: true,
-						title: localize('uploadingFiles', "Uploading")
-					}, async progress => {
-						this.handleWebExternalDrop(resolvedTarget, originalEvent, progress, cts.token);
-					}, () => cts.dispose(true));
-					// Also indicate progress in the files view
-					this.progressService.withProgress({ location: VIEW_ID, delay: 500 }, () => dropPromise);
-				} else {
-					this.handleExternalDrop(resolvedTarget, originalEvent, cts.token);
+			if (isWeb) {
+				// Indicate progress globally
+				const dropPromise = this.progressService.withProgress({
+					location: ProgressLocation.Window,
+					delay: 800,
+					cancellable: true,
+					title: localize('uploadingFiles', "Uploading")
+				}, async progress => {
+					try {
+						await this.handleWebExternalDrop(resolvedTarget, originalEvent, progress, cts.token);
+					} catch (error) {
+						this.notificationService.warn(error);
+					}
+				}, () => cts.dispose(true));
+				// Also indicate progress in the files view
+				this.progressService.withProgress({ location: VIEW_ID, delay: 500 }, () => dropPromise);
+			} else {
+				try {
+					await this.handleExternalDrop(resolvedTarget, originalEvent, cts.token);
+				} catch (error) {
+					this.notificationService.warn(error);
 				}
-			} catch (error) {
-				this.notificationService.warn(error);
 			}
 		}
 		// In-Explorer DND (Move/Copy file)
@@ -1074,7 +1093,7 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 				}
 
 				await this.explorerService.applyBulkEdit([new ResourceFileEdit(joinPath(target.resource, entry.name), undefined, { recursive: true })], {
-					undoLabel: localize('overwrite', "Overwriting {0}", entry.name),
+					undoLabel: localize('overwrite', "Overwrite {0}", entry.name),
 					progressLabel: localize('overwriting', "Overwriting {0}", entry.name),
 				});
 
@@ -1225,9 +1244,10 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 
 				res = await reader.read();
 			}
-			writeableStream.end(res.value instanceof Uint8Array ? VSBuffer.wrap(res.value) : undefined);
+			writeableStream.end(undefined);
 		} catch (error) {
-			writeableStream.end(error);
+			writeableStream.error(error);
+			writeableStream.end();
 		}
 
 		if (token.isCancellationRequested) {
@@ -1345,14 +1365,14 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 			});
 
 			await this.explorerService.applyBulkEdit(resourceFileEdits, {
-				undoLabel: resourcesFiltered.length === 1 ? localize('copyFile', "Copy {0}", basename(resourcesFiltered[0])) : localize('copynFile', "Copy {0} files", resourcesFiltered.length),
-				progressLabel: resourcesFiltered.length === 1 ? localize('copyingFile', "Copying {0}", basename(resourcesFiltered[0])) : localize('copyingnFile', "Copying {0} files", resourcesFiltered.length)
+				undoLabel: resourcesFiltered.length === 1 ? localize('copyFile', "Copy {0}", basename(resourcesFiltered[0])) : localize('copynFile', "Copy {0} resources", resourcesFiltered.length),
+				progressLabel: resourcesFiltered.length === 1 ? localize('copyingFile', "Copying {0}", basename(resourcesFiltered[0])) : localize('copyingnFile', "Copying {0} resources", resourcesFiltered.length)
 			});
 
 			// if we only add one file, just open it directly
 			if (resourceFileEdits.length === 1) {
 				const item = this.explorerService.findClosest(resourceFileEdits[0].newResource!);
-				if (item) {
+				if (item && !item.isDirectory) {
 					this.editorService.openEditor({ resource: item.resource, options: { pinned: true } });
 				}
 			}
@@ -1440,9 +1460,10 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 		// Reuse duplicate action when user copies
 		const incrementalNaming = this.configurationService.getValue<IFilesConfiguration>().explorer.incrementalNaming;
 		const resourceFileEdits = sources.map(({ resource, isDirectory }) => (new ResourceFileEdit(resource, findValidPasteFileTarget(this.explorerService, target, { resource, isDirectory, allowOverwrite: false }, incrementalNaming), { copy: true })));
+		const labelSufix = getFileOrFolderLabelSufix(sources);
 		await this.explorerService.applyBulkEdit(resourceFileEdits, {
-			undoLabel: resourceFileEdits.length > 1 ? localize('copy', "Copy {0} files", resourceFileEdits.length) : localize('copyOneFile', "Copy {0}", basenameOrAuthority(resourceFileEdits[0].newResource!)),
-			progressLabel: resourceFileEdits.length > 1 ? localize('copying', "Copying {0} files", resourceFileEdits.length) : localize('copyingOneFile', "Copying {0}", basenameOrAuthority(resourceFileEdits[0].newResource!)),
+			undoLabel: localize('copy', "Copy {0}", labelSufix),
+			progressLabel: localize('copying', "Copying {0}", labelSufix),
 		});
 
 		const editors = resourceFileEdits.filter(edit => {
@@ -1457,9 +1478,10 @@ export class FileDragAndDrop implements ITreeDragAndDrop<ExplorerItem> {
 
 		// Do not allow moving readonly items
 		const resourceFileEdits = sources.filter(source => !source.isReadonly).map(source => new ResourceFileEdit(source.resource, joinPath(target.resource, source.name)));
+		const labelSufix = getFileOrFolderLabelSufix(sources);
 		const options = {
-			undoLabel: sources.length > 1 ? localize('move', "Move {0} files", sources.length) : localize('moveOneFile', "Move {0}", sources[0].name),
-			progressLabel: sources.length > 1 ? localize('moving', "Moving {0} files", sources.length) : localize('movingOneFile', "Moving {0}", sources[0].name),
+			undoLabel: localize('move', "Move {0}", labelSufix),
+			progressLabel: localize('moving', "Moving {0}", labelSufix)
 		};
 
 		try {
@@ -1563,4 +1585,19 @@ export class ExplorerCompressionDelegate implements ITreeCompressionDelegate<Exp
 	isIncompressible(stat: ExplorerItem): boolean {
 		return stat.isRoot || !stat.isDirectory || stat instanceof NewExplorerItem || (!stat.parent || stat.parent.isRoot);
 	}
+}
+
+function getFileOrFolderLabelSufix(items: ExplorerItem[]): string {
+	if (items.length === 1) {
+		return items[0].name;
+	}
+
+	if (items.every(i => i.isDirectory)) {
+		return `${items.length} folders`;
+	}
+	if (items.every(i => !i.isDirectory)) {
+		return `${items.length} files`;
+	}
+
+	return `${items.length} files and folders`;
 }

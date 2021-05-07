@@ -4,8 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import 'vs/css!./codicon/codicon';
-import 'vs/css!./codicon/codicon-modifications';
-import 'vs/css!./codicon/codicon-animations';
+import 'vs/css!./codicon/codicon-modifiers';
 
 import { Codicon } from 'vs/base/common/codicons';
 
@@ -14,5 +13,5 @@ export function formatRule(c: Codicon) {
 	while (def instanceof Codicon) {
 		def = def.definition;
 	}
-	return `.codicon-${c.id}:before { content: '${def.character}'; }`;
+	return `.codicon-${c.id}:before { content: '${def.fontCharacter}'; }`;
 }
