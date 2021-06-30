@@ -44,6 +44,7 @@ import 'vs/workbench/browser/parts/editor/editor.contribution';
 import 'vs/workbench/browser/parts/editor/editorPart';
 import 'vs/workbench/browser/parts/activitybar/activitybarPart';
 import 'vs/workbench/browser/parts/panel/panelPart';
+import 'vs/workbench/browser/parts/banner/bannerPart';
 import 'vs/workbench/browser/parts/sidebar/sidebarPart';
 import 'vs/workbench/browser/parts/statusbar/statusbarPart';
 import 'vs/workbench/browser/parts/views/viewsService';
@@ -161,6 +162,9 @@ import 'vs/workbench/contrib/performance/browser/performance.contribution';
 
 // Notebook
 import 'vs/workbench/contrib/notebook/browser/notebook.contribution';
+
+// Interactive
+import 'vs/workbench/contrib/interactive/browser/interactive.contribution';
 
 // Testing
 import 'vs/workbench/contrib/testing/browser/testing.contribution';

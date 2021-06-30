@@ -133,17 +133,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
 			},
 			'remote.autoForwardPorts': {
 				type: 'boolean',
-				markdownDescription: localize('remote.autoForwardPorts', "When enabled, new running processes are detected and ports that they listen on are automatically forwarded."),
+				markdownDescription: localize('remote.autoForwardPorts', "When enabled, new running processes are detected and ports that they listen on are automatically forwarded. Disabling this setting will not prevent all ports from being forwarded. Even when disabled, extensions will still be able to cause ports to be forwarded, and opening some URLs will still cause ports to forwarded."),
 				default: true
 			},
 			'remote.autoForwardPortsSource': {
 				type: 'string',
-				markdownDescription: localize('remote.autoForwardPortsSource', "Sets the source from which ports information is found. On Windows and Mac remotes, the `process` options have no effect and `output` will be used. Requires a reload to take effect."),
-				enum: ['process', 'output', 'processAlways'],
+				markdownDescription: localize('remote.autoForwardPortsSource', "Sets the source from which ports are automatically forwarded when `remote.autoForwardPorts` is true. On Windows and Mac remotes, the `process` option has no effect and `output` will be used. Requires a reload to take effect."),
+				enum: ['process', 'output'],
 				enumDescriptions: [
-					localize('remote.autoForwardPortsSource.process', "When `remote.autoForwardPorts` is `true`, port information will be discovered by watching for processes that are started and include a port."),
-					localize('remote.autoForwardPortsSource.output', "When `remote.autoForwardPorts` is `true`, port information will be discovered by reading terminal and debug output. Not all processes that use ports will print to the integrated terminal or debug console, so some ports will be missed. Ports forwarded based on output will not be \"un-forwarded\" until reload or until the port is closed by the user in the Ports view."),
-					localize('remote.autoForwardPortsSource.processAlways', "Port information will always be discovered by watching for processes that are started and include a port, regardless of any other setting value.")
+					localize('remote.autoForwardPortsSource.process', "Ports will be automatically forwarded when discovered by watching for processes that are started and include a port."),
+					localize('remote.autoForwardPortsSource.output', "Ports will be automatically forwarded when discovered by reading terminal and debug output. Not all processes that use ports will print to the integrated terminal or debug console, so some ports will be missed. Ports forwarded based on output will not be \"un-forwarded\" until reload or until the port is closed by the user in the Ports view.")
 				],
 				default: 'process'
 			},
@@ -159,10 +158,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
 						properties: {
 							'onAutoForward': {
 								type: 'string',
-								enum: ['notify', 'openBrowser', 'openPreview', 'silent', 'ignore'],
+								enum: ['notify', 'openBrowser', 'openBrowserOnce', 'openPreview', 'silent', 'ignore'],
 								enumDescriptions: [
 									localize('remote.portsAttributes.notify', "Shows a notification when a port is automatically forwarded."),
 									localize('remote.portsAttributes.openBrowser', "Opens the browser when the port is automatically forwarded. Depending on your settings, this could open an embedded browser."),
+									localize('remote.portsAttributes.openBrowserOnce', "Opens the browser when the port is automatically forwarded, but only the first time the port is forward during a session. Depending on your settings, this could open an embedded browser."),
 									localize('remote.portsAttributes.openPreview', "Opens a preview in the same window when the port is automatically forwarded."),
 									localize('remote.portsAttributes.silent', "Shows no notification and takes no action when this port is automatically forwarded."),
 									localize('remote.portsAttributes.ignore', "This port will not be automatically forwarded.")
@@ -179,6 +179,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
 								type: 'string',
 								description: localize('remote.portsAttributes.label', "Label that will be shown in the UI for this port."),
 								default: localize('remote.portsAttributes.labelDefault', "Application")
+							},
+							'requireLocalPort': {
+								type: 'boolean',
+								markdownDescription: localize('remote.portsAttributes.requireLocalPort', "When true, a modal dialog will show if the chosen local port isn't used for forwarding."),
+								default: false
+							},
+							'protocol': {
+								type: 'string',
+								enum: ['http', 'https'],
+								description: localize('remote.portsAttributes.protocol', "The protocol to use when forwarding this port.")
 							}
 						},
 						default: {
@@ -217,11 +227,27 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
 						type: 'string',
 						description: localize('remote.portsAttributes.label', "Label that will be shown in the UI for this port."),
 						default: localize('remote.portsAttributes.labelDefault', "Application")
+					},
+					'requireLocalPort': {
+						type: 'boolean',
+						markdownDescription: localize('remote.portsAttributes.requireLocalPort', "When true, a modal dialog will show if the chosen local port isn't used for forwarding."),
+						default: false
+					},
+					'protocol': {
+						type: 'string',
+						enum: ['http', 'https'],
+						description: localize('remote.portsAttributes.protocol', "The protocol to use when forwarding this port.")
 					}
 				},
 				defaultSnippets: [{ body: { onAutoForward: 'ignore' } }],
 				markdownDescription: localize('remote.portsAttributes.defaults', "Set default properties that are applied to all ports that don't get properties from the setting `remote.portsAttributes`. For example:\n\n```\n{\n  \"onAutoForward\": \"ignore\"\n}\n```"),
 				additionalProperties: false
+			},
+			'remote.localPortHost': {
+				type: 'string',
+				enum: ['localhost', 'allInterfaces'],
+				default: 'localhost',
+				description: localize('remote.localPortHost', "Specifies the local host name that will be used for port forwarding.")
 			}
 		}
 	});
